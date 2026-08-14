@@ -179,6 +179,11 @@ const (
 	// ServiceAnnotationLoadbalancerBackendSetSSLConfig is a service annotation allows you to set the cipher suite on the backendSet
 	ServiceAnnotationLoadbalancerBackendSetSSLConfig = "oci.oraclecloud.com/oci-load-balancer-backendset-ssl-config"
 
+	// ServiceAnnotationLoadbalancerBackendSetCABundle is a service annotation that allows you to specify an OCI
+	// Certificates Service CA Bundle OCID to populate TrustedCertificateAuthorityIds on the backendSet SSL
+	// configuration. This is independent of, and can be supplied without, ServiceAnnotationLoadBalancerTLSBackendSetSecret.
+	ServiceAnnotationLoadbalancerBackendSetCABundle = "oci.oraclecloud.com/oci-load-balancer-backendset-ca-bundle"
+
 	// ServiceAnnotationIngressIpMode is a service annotation allows you to set the ".status.loadBalancer.ingress.ipMode" for a Service
 	// with type set to LoadBalancer.
 	// https://kubernetes.io/docs/concepts/services-networking/service/#load-balancer-ip-mode:~:text=Specifying%20IPMode%20of%20load%20balancer%20status
@@ -321,8 +326,12 @@ func requiresCertificate(svc *v1.Service) bool {
 	if getLoadBalancerType(svc) == NLB {
 		return false
 	}
-	_, ok := svc.Annotations[ServiceAnnotationLoadBalancerSSLPorts]
-	return ok
+	if _, ok := svc.Annotations[ServiceAnnotationLoadBalancerSSLPorts]; ok {
+		return true
+	}
+	// A CA Bundle alone (without SSL ports) must still trigger SSLConfig
+	// construction so backend-set trust configuration can be built.
+	return svc.Annotations[ServiceAnnotationLoadbalancerBackendSetCABundle] != ""
 }
 
 func requiresNsgManagement(svc *v1.Service) bool {
@@ -838,10 +847,11 @@ func getBackendSets(logger *zap.SugaredLogger, svc *v1.Service, provisionedNodes
 	for backendSetName, servicePort := range getBackendSetNamePortMap(svc) {
 		var secretName string
 		var sslConfiguration *client.GenericSslConfigurationDetails
-		if sslCfg != nil && len(sslCfg.BackendSetSSLSecretName) != 0 && getLoadBalancerType(svc) == LB {
+		caBundleId := svc.Annotations[ServiceAnnotationLoadbalancerBackendSetCABundle]
+		if sslCfg != nil && (len(sslCfg.BackendSetSSLSecretName) != 0 || caBundleId != "") && getLoadBalancerType(svc) == LB {
 			secretName = sslCfg.BackendSetSSLSecretName
 			backendSetSSLConfig, _ := svc.Annotations[ServiceAnnotationLoadbalancerBackendSetSSLConfig]
-			sslConfiguration, err = getSSLConfiguration(sslCfg, secretName, int(servicePort.Port), backendSetSSLConfig)
+			sslConfiguration, err = getSSLConfiguration(sslCfg, secretName, int(servicePort.Port), backendSetSSLConfig, caBundleId)
 			if err != nil {
 				return nil, err
 			}
@@ -1019,15 +1029,18 @@ func getHealthCheckTimeout(svc *v1.Service) (int, error) {
 }
 
 func GetSSLConfiguration(cfg *SSLConfig, name string, port int, sslConfigAnnotation string) (*client.GenericSslConfigurationDetails, error) {
-	sslConfig, err := getSSLConfiguration(cfg, name, port, sslConfigAnnotation)
+	sslConfig, err := getSSLConfiguration(cfg, name, port, sslConfigAnnotation, "")
 	if err != nil {
 		return nil, err
 	}
 	return sslConfig, nil
 }
 
-func getSSLConfiguration(cfg *SSLConfig, name string, port int, lbSslConfigurationAnnotation string) (*client.GenericSslConfigurationDetails, error) {
-	if cfg == nil || !cfg.Ports.Has(port) || len(name) == 0 {
+func getSSLConfiguration(cfg *SSLConfig, name string, port int, lbSslConfigurationAnnotation string, caBundleId string) (*client.GenericSslConfigurationDetails, error) {
+	if cfg == nil || (!cfg.Ports.Has(port) && caBundleId == "") {
+		return nil, nil
+	}
+	if len(name) == 0 && caBundleId == "" {
 		return nil, nil
 	}
 	// TODO: fast-follow to pass the sslconfiguration object directly to loadbalancer
@@ -1040,9 +1053,14 @@ func getSSLConfiguration(cfg *SSLConfig, name string, port int, lbSslConfigurati
 		}
 	}
 	genericSSLConfigurationDetails := &client.GenericSslConfigurationDetails{
-		CertificateName:       &name,
 		VerifyDepth:           common.Int(0),
 		VerifyPeerCertificate: common.Bool(false),
+	}
+	if len(name) != 0 {
+		genericSSLConfigurationDetails.CertificateName = &name
+	}
+	if caBundleId != "" {
+		genericSSLConfigurationDetails.TrustedCertificateAuthorityIds = []string{caBundleId}
 	}
 	if extractCipherSuite != nil {
 		genericSSLConfigurationDetails.CipherSuiteName = extractCipherSuite.CipherSuiteName
@@ -1113,7 +1131,7 @@ func getListenersOciLoadBalancer(svc *v1.Service, sslCfg *SSLConfig) (map[string
 		if sslCfg != nil && len(sslCfg.ListenerSSLSecretName) != 0 {
 			secretName = sslCfg.ListenerSSLSecretName
 			listenerCipherSuiteAnnotation, _ := svc.Annotations[ServiceAnnotationLoadbalancerListenerSSLConfig]
-			sslConfiguration, err = getSSLConfiguration(sslCfg, secretName, port, listenerCipherSuiteAnnotation)
+			sslConfiguration, err = getSSLConfiguration(sslCfg, secretName, port, listenerCipherSuiteAnnotation, "")
 			if err != nil {
 				return nil, err
 			}

@@ -2548,6 +2548,40 @@ func TestGetSSLConfigurationChanges(t *testing.T) {
 			},
 			expected: []string{},
 		},
+		{
+			name: "TrustedCertificateAuthorityIds unchanged",
+			desired: client.GenericSslConfigurationDetails{
+				TrustedCertificateAuthorityIds: []string{"ocid1.cabundle.oc1..a"},
+			},
+			actual: client.GenericSslConfigurationDetails{
+				TrustedCertificateAuthorityIds: []string{"ocid1.cabundle.oc1..a"},
+			},
+			expected: []string{},
+		},
+		{
+			name: "TrustedCertificateAuthorityIds changed",
+			desired: client.GenericSslConfigurationDetails{
+				TrustedCertificateAuthorityIds: []string{"ocid1.cabundle.oc1..b"},
+			},
+			actual: client.GenericSslConfigurationDetails{
+				TrustedCertificateAuthorityIds: []string{"ocid1.cabundle.oc1..a"},
+			},
+			expected: []string{
+				fmt.Sprintf(changeFmtStr, "Listener:SSLConfiguration:TrustedCertificateAuthorityIds", "ocid1.cabundle.oc1..a", "ocid1.cabundle.oc1..b"),
+			},
+		},
+		{
+			name: "TrustedCertificateAuthorityIds removed",
+			desired: client.GenericSslConfigurationDetails{
+				TrustedCertificateAuthorityIds: nil,
+			},
+			actual: client.GenericSslConfigurationDetails{
+				TrustedCertificateAuthorityIds: []string{"ocid1.cabundle.oc1..a"},
+			},
+			expected: []string{
+				fmt.Sprintf(changeFmtStr, "Listener:SSLConfiguration:TrustedCertificateAuthorityIds", "ocid1.cabundle.oc1..a", ""),
+			},
+		},
 	}
 
 	for _, tt := range testCases {
