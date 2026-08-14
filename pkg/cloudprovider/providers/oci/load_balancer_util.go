@@ -473,6 +473,10 @@ func getSSLConfigurationChanges(actual *client.GenericSslConfigurationDetails, d
 		}
 	}
 
+	if !sets.NewString(actual.TrustedCertificateAuthorityIds...).Equal(sets.NewString(desired.TrustedCertificateAuthorityIds...)) {
+		sslConfigurationChanges = append(sslConfigurationChanges, fmt.Sprintf(changeFmtStr, "Listener:SSLConfiguration:TrustedCertificateAuthorityIds", strings.Join(actual.TrustedCertificateAuthorityIds, ","), strings.Join(desired.TrustedCertificateAuthorityIds, ",")))
+	}
+
 	return sslConfigurationChanges
 }
 
