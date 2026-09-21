@@ -48,7 +48,7 @@ import (
 const (
 	// providerName uniquely identifies the Oracle Cloud Infrastructure
 	// (OCI) cloud-provider.
-	providerName   = "oci"
+	providerName   = "oci-custom-ccm"
 	providerPrefix = providerName + "://"
 
 	enableFlexCIDRController         = "ENABLE_FLEX_CIDR_CONTROLLER"
