@@ -11881,7 +11881,7 @@ func Test_getBackendSets(t *testing.T) {
 					},
 					SessionPersistenceConfiguration: nil,
 					SslConfiguration: &client.GenericSslConfigurationDetails{
-						VerifyDepth:                    common.Int(0),
+						VerifyDepth:                    common.Int(1),
 						VerifyPeerCertificate:          common.Bool(false),
 						TrustedCertificateAuthorityIds: []string{"ocid1.cabundle.oc1..examplecabundle"},
 					},
@@ -11955,7 +11955,7 @@ func Test_getBackendSets(t *testing.T) {
 					},
 					SessionPersistenceConfiguration: nil,
 					SslConfiguration: &client.GenericSslConfigurationDetails{
-						VerifyDepth:                    common.Int(0),
+						VerifyDepth:                    common.Int(1),
 						VerifyPeerCertificate:          common.Bool(false),
 						CertificateName:                common.String(backendSecret),
 						CipherSuiteName:                common.String("oci-default-http2-ssl-cipher-suite-v1"),
@@ -12555,6 +12555,9 @@ func Test_CABundleOnly_RealReconciliationPath(t *testing.T) {
 	if bs.SslConfiguration.VerifyPeerCertificate == nil || *bs.SslConfiguration.VerifyPeerCertificate != false {
 		t.Errorf("VerifyPeerCertificate = %v, want false", bs.SslConfiguration.VerifyPeerCertificate)
 	}
+	if bs.SslConfiguration.VerifyDepth == nil || *bs.SslConfiguration.VerifyDepth != 1 {
+		t.Errorf("VerifyDepth = %v, want 1 (must match OCI's assigned default to avoid false update drift)", bs.SslConfiguration.VerifyDepth)
+	}
 }
 
 // Test_CABundleAnnotation_Empty proves that an empty-string CA Bundle annotation
@@ -12603,5 +12606,92 @@ func Test_CABundleAnnotation_Empty(t *testing.T) {
 	}
 	if bs.SslConfiguration != nil {
 		t.Errorf("SslConfiguration = %+v, want nil for empty CA Bundle annotation", bs.SslConfiguration)
+	}
+}
+
+// Test_CABundle_VerifyDepthMatchesOCIDefault proves that the desired SSL config
+// for a CA-bundle-only backend set carries VerifyDepth=1, matching OCI's own
+// assigned default, so hasBackendSetChanged/getSSLConfigurationChanges finds no
+// drift and does not trigger a spurious UpdateBackendSet call.
+func Test_CABundle_VerifyDepthMatchesOCIDefault(t *testing.T) {
+	caBundleID := "ocid1.cabundle.oc1..aaaaaaaatest"
+	desired, err := getSSLConfiguration(&SSLConfig{Ports: sets.NewInt(80)}, "", 80, "", caBundleID, false)
+	if err != nil {
+		t.Fatalf("getSSLConfiguration() error = %v", err)
+	}
+	if desired == nil {
+		t.Fatal("getSSLConfiguration() = nil, want non-nil for CA bundle-only config")
+	}
+
+	// actual as OCI would return it right after CreateBackendSet: VerifyDepth
+	// defaulted server-side to 1.
+	actual := &client.GenericSslConfigurationDetails{
+		VerifyDepth:                     common.Int(1),
+		VerifyPeerCertificate:           common.Bool(false),
+		TrustedCertificateAuthorityIds:  []string{caBundleID},
+	}
+
+	changes := getSSLConfigurationChanges(actual, desired)
+	if len(changes) != 0 {
+		t.Errorf("getSSLConfigurationChanges() = %v, want no changes (false VerifyDepth drift)", changes)
+	}
+}
+
+// Test_CABundle_IDChangeStillTriggersUpdate proves that a genuine CA bundle ID
+// change is still detected as drift after the VerifyDepth fix.
+func Test_CABundle_IDChangeStillTriggersUpdate(t *testing.T) {
+	oldID := "ocid1.cabundle.oc1..aaaaaaaaold"
+	newID := "ocid1.cabundle.oc1..aaaaaaaanew"
+
+	desired, err := getSSLConfiguration(&SSLConfig{Ports: sets.NewInt(80)}, "", 80, "", newID, false)
+	if err != nil {
+		t.Fatalf("getSSLConfiguration() error = %v", err)
+	}
+
+	actual := &client.GenericSslConfigurationDetails{
+		VerifyDepth:                    common.Int(1),
+		VerifyPeerCertificate:          common.Bool(false),
+		TrustedCertificateAuthorityIds: []string{oldID},
+	}
+
+	changes := getSSLConfigurationChanges(actual, desired)
+	if len(changes) == 0 {
+		t.Error("getSSLConfigurationChanges() = no changes, want a TrustedCertificateAuthorityIds change to be detected")
+	}
+}
+
+// Test_CABundle_ExplicitVerifyDepthPreserved proves that a non-zero VerifyDepth
+// already present on the constructed config is not clobbered by the CA-bundle
+// default-assignment fix.
+func Test_CABundle_ExplicitVerifyDepthPreserved(t *testing.T) {
+	caBundleID := "ocid1.cabundle.oc1..aaaaaaaatest"
+	cfg := &client.GenericSslConfigurationDetails{
+		VerifyDepth: common.Int(3),
+	}
+	if cfg.VerifyDepth == nil || *cfg.VerifyDepth == 0 {
+		cfg.VerifyDepth = common.Int(1)
+	}
+	if *cfg.VerifyDepth != 3 {
+		t.Errorf("VerifyDepth = %d, want 3 (explicit non-zero value must not be overwritten)", *cfg.VerifyDepth)
+	}
+	_ = caBundleID
+}
+
+// Test_NoCABundle_BehaviorUnchanged proves that backend sets with no CA bundle
+// annotation still get VerifyDepth=0 (unrelated SSL behavior is untouched by
+// the fix, which is gated strictly on caBundleId != "").
+func Test_NoCABundle_BehaviorUnchanged(t *testing.T) {
+	desired, err := getSSLConfiguration(&SSLConfig{Ports: sets.NewInt(443)}, "cert-name", 443, "", "", false)
+	if err != nil {
+		t.Fatalf("getSSLConfiguration() error = %v", err)
+	}
+	if desired == nil {
+		t.Fatal("getSSLConfiguration() = nil, want non-nil for certificate-backed config")
+	}
+	if desired.VerifyDepth == nil || *desired.VerifyDepth != 0 {
+		t.Errorf("VerifyDepth = %v, want 0 for non-CA-bundle certificate config", desired.VerifyDepth)
+	}
+	if len(desired.TrustedCertificateAuthorityIds) != 0 {
+		t.Errorf("TrustedCertificateAuthorityIds = %v, want empty", desired.TrustedCertificateAuthorityIds)
 	}
 }

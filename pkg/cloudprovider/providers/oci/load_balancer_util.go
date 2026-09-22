@@ -697,12 +697,22 @@ func GetLoadBalancerName(service *api.Service) string {
 		}
 	default:
 		{
-			prefix := os.Getenv(lbNamePrefixEnvVar)
-			if prefix != "" && !strings.HasSuffix(prefix, "-") {
-				// Add the trailing hyphen if it's missing
-				prefix += "-"
+			customName := strings.TrimSpace(service.Annotations[ServiceAnnotationLoadBalancerName])
+			if customName != "" {
+				uidStr := string(service.UID)
+				maxCustomLen := 1024 - len(uidStr) - 1
+				if maxCustomLen > 0 && len(customName) > maxCustomLen {
+					customName = customName[:maxCustomLen]
+				}
+				name = fmt.Sprintf("%s-%s", customName, uidStr)
+			} else {
+				prefix := os.Getenv(lbNamePrefixEnvVar)
+				if prefix != "" && !strings.HasSuffix(prefix, "-") {
+					// Add the trailing hyphen if it's missing
+					prefix += "-"
+				}
+				name = fmt.Sprintf("%s%s", prefix, service.UID)
 			}
-			name = fmt.Sprintf("%s%s", prefix, service.UID)
 		}
 	}
 	if len(name) > 1024 {
@@ -752,6 +762,11 @@ func getSSLEnabledPorts(svc *api.Service) ([]int, error) {
 	ports := []int{}
 	annotation, ok := svc.Annotations[ServiceAnnotationLoadBalancerSSLPorts]
 	if !ok || annotation == "" {
+		if svc.Annotations[ServiceAnnotationLoadbalancerBackendSetCABundle] != "" {
+			for _, servicePort := range svc.Spec.Ports {
+				ports = append(ports, int(servicePort.Port))
+			}
+		}
 		return ports, nil
 	}
 

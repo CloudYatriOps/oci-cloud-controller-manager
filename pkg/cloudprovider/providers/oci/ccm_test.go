@@ -11,7 +11,39 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	listersv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
+
+	providercfg "github.com/oracle/oci-cloud-controller-manager/pkg/cloudprovider/providers/oci/config"
 )
+
+// TestNewCloudProvider_MinimalInstancePrincipalConfig verifies that a minimal
+// config (useInstancePrincipals + compartment only, no loadBalancer/vcn/subnet
+// block) does not panic during NewCloudProvider. Regression test for the nil
+// pointer dereference on config.LoadBalancer when the optional loadBalancer
+// config block is absent.
+func TestNewCloudProvider_MinimalInstancePrincipalConfig(t *testing.T) {
+	cfg := &providercfg.Config{
+		UseInstancePrincipals: true,
+		CompartmentID:         "ocid1.compartment.oc1..testvalue",
+		// LoadBalancer, RateLimiter, Metrics, Tags intentionally nil/zero to
+		// exercise the minimal-config path.
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("NewCloudProvider panicked with minimal instance-principal config: %v", r)
+		}
+	}()
+
+	// NewCloudProvider will attempt real instance-principal auth setup and
+	// OCI client construction, which is expected to fail in a non-OCI test
+	// environment. The point of this test is solely that it returns an error
+	// instead of panicking, and that the optional config blocks (LoadBalancer,
+	// RateLimiter, Metrics, Tags) are handled safely when absent.
+	_, err := NewCloudProvider(cfg)
+	if err != nil {
+		t.Logf("NewCloudProvider returned expected non-panic error in test environment: %v", err)
+	}
+}
 
 type stubNodeInformer struct {
 	lister listersv1.NodeLister

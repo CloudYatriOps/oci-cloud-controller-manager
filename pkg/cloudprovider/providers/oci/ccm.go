@@ -48,7 +48,7 @@ import (
 const (
 	// providerName uniquely identifies the Oracle Cloud Infrastructure
 	// (OCI) cloud-provider.
-	providerName   = "oci"
+	providerName   = "oci-custom-ccm"
 	providerPrefix = providerName + "://"
 
 	enableFlexCIDRController         = "ENABLE_FLEX_CIDR_CONTROLLER"
@@ -126,7 +126,7 @@ func NewCloudProvider(config *providercfg.Config) (cloudprovider.Interface, erro
 		config.CompartmentID = metadata.CompartmentID
 	}
 
-	if !config.LoadBalancer.Disabled && config.VCNID == "" {
+	if config.LoadBalancer != nil && !config.LoadBalancer.Disabled && config.VCNID == "" && config.LoadBalancer.Subnet1 != "" {
 		logger.Info("No VCN provided in cloud provider config. Falling back to looking up VCN via LB subnet.")
 		subnet, err := c.Networking(nil).GetSubnet(context.Background(), config.LoadBalancer.Subnet1)
 		if err != nil {
@@ -262,7 +262,7 @@ func (cp *CloudProvider) Initialize(clientBuilder cloudprovider.ControllerClient
 	*/
 
 	cp.securityListManagerFactory = func(mode string) securityListManager {
-		if cp.config.LoadBalancer.Disabled {
+		if cp.config.LoadBalancer == nil || cp.config.LoadBalancer.Disabled {
 			return newSecurityListManagerNOOP()
 		}
 		if len(mode) == 0 {
@@ -281,7 +281,7 @@ func (cp *CloudProvider) ProviderName() string {
 // is supported, false otherwise.
 func (cp *CloudProvider) LoadBalancer() (cloudprovider.LoadBalancer, bool) {
 	cp.logger.Debug("Claiming to support load balancers")
-	return cp, !cp.config.LoadBalancer.Disabled
+	return cp, cp.config.LoadBalancer != nil && !cp.config.LoadBalancer.Disabled
 }
 
 // Instances returns an instances interface. Also returns true if the interface
